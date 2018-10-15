@@ -15,75 +15,84 @@ typedef struct {
   ucontext_t uc;
   char *stack;
   set<unsigned int> locks;
-  thread_startfunc_t func;
-  void *arg;
 } thread_t;
 
 typedef struct {
   unsigned int label;
   thread_t *holder;
+  bool available;
   queue<thread_t*> waiters;
-  map< unsigned int, queue<thread_t> > signalWaiters; //maps CVs to waiters
+  map< unsigned int, queue<thread_t*> > signalWaiters; //maps CVs to waiters
 } lock_t;
 
 queue<thread_t*> ready;
 thread_t* current_thread;
+thread_t* last_thread;
 map<unsigned int, lock_t*> locks;
-//thread_t *tobe_deleted;
+bool libinitCalled = false;
+bool first = true;
+thread_t *tobe_deleted;
+
+static int run_next_ready(){
+  interrupt_disable();
+  if(ready.empty()){
+    cout << "Thread library exiting." << endl;
+    exit;
+  }
+
+  last_thread = current_thread;
+  current_thread = ready.front();
+  
+  if(first){ //if first time (libinit)
+    first = false;
+    ready.pop();
+    setcontext(&current_thread->uc);
+  }
+  else {
+    ready.pop();
+    swapcontext(&last_thread->uc, &current_thread->uc);
+    delete(tobe_deleted);
+    interrupt_enable();
+  }
+}
+
+static int start_thread(thread_startfunc_t func, void *arg){
+  interrupt_enable();
+  //calling function
+  (*func)(arg);
+  interrupt_disable();
+  //deleting thread
+  tobe_deleted = current_thread;
+  interrupt_enable();
+  run_next_ready();
+}
 
 static int create_thread(thread_startfunc_t func, void *arg){
   thread_t *thread = new thread_t;
   getcontext(&thread->uc);
 
-  thread->func = func;
-  thread->arg = arg;
   thread->stack = new char [STACK_SIZE];
   thread->uc.uc_stack.ss_sp = thread->stack;
   thread->uc.uc_stack.ss_size = STACK_SIZE;
   thread->uc.uc_stack.ss_flags = 0;
   thread->uc.uc_link = NULL;
   
-  makecontext(&thread->uc, (void (*) ()) func, 1, arg);
-  ready.push(thread);  
+  makecontext(&thread->uc, (void (*) ()) start_thread, 2, func, arg);
+  ready.push(thread);
 }
-
-static int run_next_ready(){
-  if(ready.empty()){
-    cout << "thread library exiting" << endl;
-    exit;
-  } else {
-    thread_t *temp = ready.front();
-    ready.pop();
-    swapcontext(&current_thread->uc, &temp->uc);
-  }
-}
-
-static int run_func(thread_t *t){
-  interrupt_disable();
-  current_thread = t;
-  /*if(*tobe_deleted != null){
-    delete tobe_deleted;
-    }*/
-  interrupt_enable();
-  
-  (t->func)(t->arg);
-
-  interrupt_disable();
-  /*if(*tobe_deleted != null){
-    delete tobe_delted;
-    tobe_delted = t;
-    }*/
-  delete t;
-  run_next_ready();
-  interrupt_enable;
-}
-
 
 int thread_libinit(thread_startfunc_t func, void *arg){
   interrupt_disable();
-  create_thread(func, arg);
-  interrupt_enable();
-  run_func(ready.front());
+  if(!libinitCalled){
+    libinitCalled = true;
+    create_thread(func, arg);
+    interrupt_enable();
+    run_next_ready();
+  }
+  else {
+    interrupt_enable();
+    return -1;
+  }
 }
 
 int thread_create(thread_startfunc_t func, void *arg){
@@ -95,14 +104,13 @@ int thread_create(thread_startfunc_t func, void *arg){
 int thread_yield(void){
   interrupt_disable();
   if(ready.empty()){
+    interrupt_enable();
     return 0;
   }
- 
+  
   ready.push(current_thread);
-  thread_t *temp = ready.front();
-  ready.pop();
-  swapcontext(&current_thread->uc,&temp->uc);
   interrupt_enable();
+  run_next_ready();
 }
 
 int thread_lock(unsigned int lock){
@@ -111,47 +119,113 @@ int thread_lock(unsigned int lock){
     lock_t *newLock = new lock_t;
     newLock->label = lock;
     newLock->holder = current_thread;
+    newLock->available = false;
     //newLock->waiters = new queue<thread_t>();
     //newLock->signalWaiters = new map< unsigned int, queue<thread_t> >();
     locks.insert(pair<unsigned int, lock_t*>(lock, newLock));
     current_thread->locks.insert(lock);
   }
   else if(current_thread->locks.find(lock) == current_thread->locks.end()){ //current thread doesn't have lock
-    locks.find(lock)->second->waiters.push(current_thread); //add current thread to locks waiters queue
-    run_next_ready();
-    locks.find(lock)->second->holder = current_thread;
-    current_thread->locks.insert(lock);
+    if(locks.find(lock)->second->available){
+      current_thread->locks.insert(lock);
+      locks.find(lock)->second->available = false;
+    }
+    else {
+      locks.find(lock)->second->waiters.push(current_thread); //add current thread to locks waiters queue
+      interrupt_enable();
+      run_next_ready();
+      interrupt_disable();
+      locks.find(lock)->second->holder = current_thread;
+      current_thread->locks.insert(lock);
+      locks.find(lock)->second->available = false;
+    }
+  }
+  else if(current_thread->locks.find(lock) != current_thread->locks.end()){ //if current thread already has lock
+    interrupt_enable();
+    return -1;
   }
   interrupt_enable();
 }
 
 int thread_unlock(unsigned int lock){
-  if(current_thread->locks.find(lock) == current_thread->locks.find(lock).end()){ //if current thread doesn't have lock
-    cout << "FAK U" << endl;
+  interrupt_disable();
+  if(current_thread->locks.find(lock) == current_thread->locks.end()){ //if current thread doesn't have lock
+    interrupt_enable();
+    return -1;
   }
   else if(locks.find(lock) != locks.end()) { //if lock exists
-    if(locks.find(lock)->second->waiters.empty() && locks.find(lock)->second->signalWaiters.empty()){ // nobody waiting
+    if(locks.find(lock)->second->waiters.empty() && locks.find(lock)->second->signalWaiters.empty()){ //nobody waiting
       delete(locks.find(lock)->second);
       locks.erase(lock);
+      current_thread->locks.erase(current_thread->locks.find(lock)); //remove lock from current threads list of locks
     }	
     else { // else: waiter list is not empty
-      ready.push(locks.find(lock)->second->waiters.first());
+      ready.push(locks.find(lock)->second->waiters.front());
       locks.find(lock)->second->waiters.pop();
+      current_thread->locks.erase(current_thread->locks.find(lock)); //remove lock from current threads list of locks
+      locks.find(lock)->second->available = true;
     }
   }
   else { //if lock doesn't exist
-    
+    interrupt_enable();
+    return -1;
   }
+  interrupt_enable();
 }
 
 int thread_wait(unsigned int lock, unsigned int cond){
-
+  interrupt_disable();
+  
+  if(locks.find(lock) == locks.end()){ //if lock doesn't exist return -1
+    interrupt_enable();
+    return -1;
+  }
+  else if(current_thread->locks.find(lock) == current_thread->locks.end()){ //current thread doesn't have lock
+    return -1;
+  }
+  else if(current_thread->locks.find(lock) != current_thread->locks.end()){ //if current thread has lock
+    //if CV exists for this lock
+    if(locks.find(lock)->second->signalWaiters.find(cond) != locks.find(lock)->second->signalWaiters.end()){
+      //add current thread to waiting queue for lock's condition variable
+      locks.find(lock)->second->signalWaiters.find(cond)->second.push(current_thread);
+      //to lock or not to lock
+      locks.find(lock)->second->available = true;
+      interrupt_enable();
+      run_next_ready();
+      interrupt_disable();
+      locks.find(lock)->second->available = false;
+    }
+    else { //CV doesn't exist, must create it and add it to signalWaiters
+      queue<thread_t*> newSignalWaiters;
+      newSignalWaiters.push(current_thread); //add itself to queue
+      locks.find(lock)->second->signalWaiters.insert(pair< unsigned int, queue<thread_t*> >(cond, newSignalWaiters));
+      locks.find(lock)->second->available = true;
+      interrupt_enable();
+      run_next_ready();
+      interrupt_disable();
+      locks.find(lock)->second->available = false;
+    }
+  }
+  
+  interrupt_enable();
 }
 
 int thread_signal(unsigned int lock, unsigned int cond){
-
+  interrupt_disable();
+  map< unsigned int, queue<thread_t*> > sigWaitMapHolder = locks.find(lock)->second->signalWaiters;
+  if(locks.find(lock) != locks.end() || sigWaitMapHolder.find(cond) != sigWaitMapHolder.end()){
+    ready.push(sigWaitMapHolder.find(cond)->second.front());
+    sigWaitMapHolder.find(cond)->second.pop();
+  }
+  else {
+    interrupt_enable();
+    return -1;
+  }
+  interrupt_enable();
 }
 
 int thread_broadcast(unsigned int lock, unsigned int cond){
+  interrupt_disable();
 
+  interrupt_enable();
 }
