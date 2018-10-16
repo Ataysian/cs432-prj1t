@@ -31,6 +31,8 @@ thread_t* last_thread;
 map<unsigned int, lock_t*> locks;
 bool libinitCalled = false;
 bool first = true;
+
+bool cleanup_req = false; //on isle four
 thread_t *tobe_deleted;
 
 static int run_next_ready(){
@@ -42,16 +44,19 @@ static int run_next_ready(){
 
   last_thread = current_thread;
   current_thread = ready.front();
-  
+  ready.pop();
+  cout << "got here3" << endl;
+  cout << ready.size() << endl;
   if(first){ //if first time (libinit)
     first = false;
-    ready.pop();
     setcontext(&current_thread->uc);
   }
   else {
-    ready.pop();
     swapcontext(&last_thread->uc, &current_thread->uc);
-    delete(tobe_deleted);
+    if(cleanup_req){
+      delete(tobe_deleted);
+      cleanup_req = false;
+    }
     interrupt_enable();
   }
 }
@@ -63,6 +68,7 @@ static int start_thread(thread_startfunc_t func, void *arg){
   interrupt_disable();
   //deleting thread
   tobe_deleted = current_thread;
+  cleanup_req = true;
   interrupt_enable();
   run_next_ready();
 }
@@ -126,12 +132,12 @@ int thread_lock(unsigned int lock){
     current_thread->locks.insert(lock);
   }
   else if(current_thread->locks.find(lock) == current_thread->locks.end()){ //current thread doesn't have lock
-    if(locks.find(lock)->second->available){
+    if(locks.find(lock)->second->available){ //but lock is available
       current_thread->locks.insert(lock);
       locks.find(lock)->second->available = false;
     }
     else {
-      locks.find(lock)->second->waiters.push(current_thread); //add current thread to locks waiters queue
+      locks.find(lock)->second->waiters.push(current_thread); //lock is unavailable: add current thread to locks waiters queue
       interrupt_enable();
       run_next_ready();
       interrupt_disable();
@@ -200,9 +206,11 @@ int thread_wait(unsigned int lock, unsigned int cond){
       newSignalWaiters.push(current_thread); //add itself to queue
       locks.find(lock)->second->signalWaiters.insert(pair< unsigned int, queue<thread_t*> >(cond, newSignalWaiters));
       locks.find(lock)->second->available = true;
+      cout << "got here2" << endl;
       interrupt_enable();
       run_next_ready();
       interrupt_disable();
+      cout << "got here4" << endl;
       locks.find(lock)->second->available = false;
     }
   }
@@ -212,12 +220,17 @@ int thread_wait(unsigned int lock, unsigned int cond){
 
 int thread_signal(unsigned int lock, unsigned int cond){
   interrupt_disable();
-  map< unsigned int, queue<thread_t*> > sigWaitMapHolder = locks.find(lock)->second->signalWaiters;
-  if(locks.find(lock) != locks.end() || sigWaitMapHolder.find(cond) != sigWaitMapHolder.end()){
-    ready.push(sigWaitMapHolder.find(cond)->second.front());
-    sigWaitMapHolder.find(cond)->second.pop();
+  if(locks.find(lock) != locks.end()){ //if lock exist
+    map< unsigned int, queue<thread_t*> > sigWaitMapHolder = locks.find(lock)->second->signalWaiters;
+    if(sigWaitMapHolder.find(cond) != sigWaitMapHolder.end()){ //if condition exists
+      cout << "got here 100 | " << cond << endl;
+      if(!sigWaitMapHolder.find(cond)->second.empty()){ //if there is at least one waiting thread
+      ready.push(sigWaitMapHolder.find(cond)->second.front());
+      sigWaitMapHolder.find(cond)->second.pop();
+      } //if there aren't any waiters, remove
+    } //if condition doesn't exist, do nothing
   }
-  else {
+  else { //if lock doesn't exist
     interrupt_enable();
     return -1;
   }
