@@ -1,0 +1,17 @@
+#include "thread.h"
+#include <iostream>
+using namespace std;
+
+void test(void *a){
+  cout << "mah nose" << endl;
+}
+
+void initializer(void *a){
+  cout << "in hurr" << endl;
+  thread_create((thread_startfunc_t) test, (void *)a);
+}
+
+int main(){
+  thread_libinit((thread_startfunc_t) initializer, (void *)1);
+  return 0;
+}
