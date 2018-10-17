@@ -165,7 +165,6 @@ int thread_unlock(unsigned int lock){
     return -1;
   }
   else if(locks.find(lock) != locks.end()) { //if lock exists
-    //    cout << locks.find(lock)->second->waiters.size() << " signalWaiters: " << locks.find(lock)->second->signalWaiters.size() << endl;
     if(locks.find(lock)->second->waiters.empty()){ //nobody waiting for lock
       if(locks.find(lock)->second->signalWaiters.empty()){ //nobody waiting for signal
 	delete(locks.find(lock)->second);
@@ -210,9 +209,7 @@ int thread_wait(unsigned int lock, unsigned int cond){
       locks.find(lock)->second->signalWaiters.find(cond)->second.push(current_thread);
       locks.find(lock)->second->available = true;
       locks.find(lock)->second->holder = NULL;
-      //cout << "about to run next ready, CV exists" << endl;
       run_next_ready();
-      //gotten a signal at this point, must now reacquire lock, call internal lock function in lock and in here******
       inner_lock(lock);
       locks.find(lock)->second->available = false;
     }
@@ -221,11 +218,7 @@ int thread_wait(unsigned int lock, unsigned int cond){
       newSignalWaiters.push(current_thread); //add itself to queue
       locks.find(lock)->second->signalWaiters.insert(pair< unsigned int, queue<thread_t*> >(cond, newSignalWaiters));
       locks.find(lock)->second->available = true;
-      //cout << "about to run next ready, CV !exist" << endl;
-      //      cout << "ready size: " << ready.size() << endl;
-      run_next_ready(); //NEVER GETS PAST HERE
-      //cout << "ran, CV exists now" << endl;
-      //gotten a signal at this point, must now reacquire lock, call internal lock function in lock and in here******
+      run_next_ready();
       inner_lock(lock);
       locks.find(lock)->second->available = false;
     }
