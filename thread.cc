@@ -36,6 +36,7 @@ bool cleanup_req = false; //on isle four
 thread_t *tobe_deleted;
 
 static int run_next_ready(){
+  cout << "ready size: " << ready.size() << endl;
   //no more ready threads, exit
   if(ready.empty()){
     cout << "Thread library exiting." << endl;
@@ -152,16 +153,8 @@ static int inner_lock(unsigned int lock){
   }
 }
 
-int thread_lock(unsigned int lock){
-  interrupt_disable();
-  inner_lock(lock);
-  interrupt_enable();
-}
-
-int thread_unlock(unsigned int lock){
-  interrupt_disable();
+int inner_unlock(unsigned int lock){
   if(current_thread->locks.find(lock) == current_thread->locks.end()){ //if current thread doesn't have lock
-    interrupt_enable();
     return -1;
   }
   else if(locks.find(lock) != locks.end()) { //if lock exists
@@ -185,10 +178,22 @@ int thread_unlock(unsigned int lock){
     }
   }
   else { //if lock doesn't exist
-    interrupt_enable();
     return -1;
   }
+}
+
+int thread_lock(unsigned int lock){
+  interrupt_disable();
+  int temp = inner_lock(lock);
   interrupt_enable();
+  return temp;
+}
+
+int thread_unlock(unsigned int lock){
+  interrupt_disable();
+  int temp = inner_unlock(lock);
+  interrupt_enable();
+  return temp;
 }
 
 int thread_wait(unsigned int lock, unsigned int cond){
@@ -209,6 +214,7 @@ int thread_wait(unsigned int lock, unsigned int cond){
       locks.find(lock)->second->signalWaiters.find(cond)->second.push(current_thread);
       locks.find(lock)->second->available = true;
       locks.find(lock)->second->holder = NULL;
+      inner_unlock(lock);
       run_next_ready();
       inner_lock(lock);
       locks.find(lock)->second->available = false;
@@ -218,6 +224,7 @@ int thread_wait(unsigned int lock, unsigned int cond){
       newSignalWaiters.push(current_thread); //add itself to queue
       locks.find(lock)->second->signalWaiters.insert(pair< unsigned int, queue<thread_t*> >(cond, newSignalWaiters));
       locks.find(lock)->second->available = true;
+      inner_unlock(lock);
       run_next_ready();
       inner_lock(lock);
       locks.find(lock)->second->available = false;
@@ -235,11 +242,10 @@ int thread_signal(unsigned int lock, unsigned int cond){
 	ready.push(sigWaitMapHolder.find(cond)->second.front());
 	sigWaitMapHolder.find(cond)->second.pop();
       } //if there aren't any waiters, remove
-    } 
-    else { //if condition doesn't exist, create it
     }
   }
   else { //if lock doesn't exist DONT RETURN IN ERROR, CREATE THE LOCK AND CV
+    cout << "lock didn't exist" << endl;
   }
   interrupt_enable();
 }
